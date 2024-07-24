@@ -1,0 +1,134 @@
+[CmdletBinding()]
+param(
+    [string]$SourcePath = "",
+    [string]$CID = "",
+    [string]$InstallerName = "",
+    [string]$DestinationPath = $env:TEMP,
+    [string]$LogPath = "C:\Logs\CrowdStrikeInstall.log"  # New parameter for log file path
+)
+
+# Enable strict mode for better error handlin
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# Logging function
+function Write-Log {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Message,
+        
+        [Parameter(Mandatory=$false)]
+        [ValidateSet("INFO","WARN","ERROR")]
+        [string]$Level = "INFO"
+    )
+    
+    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogMessage = "$Timestamp [$Level] $Message"
+    
+    # Write to console
+    switch ($Level) {
+        "INFO"  { Write-Verbose $LogMessage }
+        "WARN"  { Write-Warning $LogMessage }
+        "ERROR" { Write-Error $LogMessage }
+    }
+    
+    # Append to log file
+    Add-Content -Path $LogPath -Value $LogMessage
+}
+
+function Test-CSFalconServiceExists {
+    [CmdletBinding()]
+    param()
+    $service = Get-Service -Name "CSFalconService" -ErrorAction SilentlyContinue
+    if ($service) {
+        Write-Log -Message "CSFalconService is already installed." -Level "INFO"
+        return $true
+    }
+    return $false
+}
+
+function Copy-Installer {
+    [CmdletBinding()]
+    param()
+    $InstallerPath = Join-Path -Path $DestinationPath -ChildPath $InstallerName
+    Write-Log -Message "Copying CrowdStrike Falcon Sensor installer to $InstallerPath" -Level "INFO"
+    
+    try {
+        Copy-Item -Path $SourcePath -Destination $InstallerPath -Force
+        Write-Log -Message "Copy completed successfully." -Level "INFO"
+        return $InstallerPath
+    }
+    catch {
+        Write-Log -Message "Failed to copy installer: $_" -Level "ERROR"
+        throw
+    }
+}
+
+function Install-Sensor {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$InstallerPath
+    )
+    $installArgs = @(
+        "/install",
+        "/quiet",
+        "/norestart",
+        "CID=$CID"
+    )
+    
+    Write-Log -Message "Installing CrowdStrike Falcon Sensor..." -Level "INFO"
+    Write-Log -Message "Command: $InstallerPath $($installArgs -join ' ')" -Level "INFO"
+    try {
+        $process = Start-Process -FilePath $InstallerPath -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+        
+        if ($process.ExitCode -eq 0) {
+            Write-Log -Message "CrowdStrike Falcon Sensor installation completed successfully." -Level "INFO"
+        } else {
+            throw "Installation failed with exit code: $($process.ExitCode)"
+        }
+    } catch {
+        Write-Log -Message "An error occurred during installation: $_" -Level "ERROR"
+        throw
+    }
+}
+
+function Main {
+    $InstallerPath = $null
+    try {
+        Write-Log -Message "Starting CrowdStrike Falcon Sensor installation script" -Level "INFO"
+        
+        if (Test-CSFalconServiceExists) {
+            Write-Log -Message "CrowdStrike Falcon Sensor is already installed. Exiting script." -Level "INFO"
+            exit 0  # Exit the script with success code
+        }
+        
+        $InstallerPath = Copy-Installer
+        if (Test-Path $InstallerPath) {
+            Install-Sensor -InstallerPath $InstallerPath
+        } else {
+            throw "Installer file not found after copy."
+        }
+    }
+    catch {
+        Write-Log -Message "Script execution failed: $_" -Level "ERROR"
+        exit 1  # Exit the script with error code
+    }
+    finally {
+        if ($InstallerPath -and (Test-Path $InstallerPath)) {
+            Remove-Item -Path $InstallerPath -Force
+            Write-Log -Message "Temporary installer file removed." -Level "INFO"
+        }
+        Write-Log -Message "CrowdStrike Falcon Sensor installation script completed" -Level "INFO"
+    }
+}
+
+# Ensure log directory exists
+$LogDir = Split-Path -Path $LogPath -Parent
+if (-not (Test-Path -Path $LogDir)) {
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+}
+
+# Run the main function
+Main
